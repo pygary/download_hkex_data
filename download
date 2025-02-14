@@ -1,0 +1,105 @@
+import requests
+import os
+import tempfile
+import time
+from datetime import datetime, timedelta
+from win32com.client import Dispatch, gencache
+import logging
+import configparser
+
+# 設定日誌
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+FILE_FORMAT_XLSX = 51
+
+def download_csv(url, save_path, retries=2, delay=2):
+    """下載 CSV 文件並保存至指定路徑，帶有重試機制"""
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            with open(save_path, 'wb') as file:
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        file.write(chunk)
+            logging.info(f"CSV 文件已成功保存到 {save_path}")
+            return
+        except requests.RequestException as e:
+            logging.warning(f"下載失敗 (嘗試 {attempt + 1}/{retries})：{e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                logging.error(f"下載失敗：{e}")
+                raise e
+
+def convert_csv_to_xlsx(csv_file_path, xlsx_file_path):
+    """將 CSV 文件轉換為 XLSX 文件"""
+    try:
+        excel = gencache.EnsureDispatch("Excel.Application")
+        excel.Visible = False
+        workbook = excel.Workbooks.Open(csv_file_path)
+        workbook.SaveAs(xlsx_file_path, FileFormat=FILE_FORMAT_XLSX)
+        logging.info(f"CSV 文件已成功轉換並保存為 XLSX 文件：{xlsx_file_path}")
+    except Exception as e:
+        logging.error(f"無法處理 Excel 文件：{e}")
+        raise e
+    finally:
+        workbook.Close(SaveChanges=False) if 'workbook' in locals() else None
+        excel.Quit()
+
+def download_csv_and_convert_to_xlsx(url, xlsx_file_path):
+    """下載 CSV 文件並轉換為 XLSX 文件"""
+    if os.path.exists(xlsx_file_path):
+        logging.info(f"{xlsx_file_path} 已存在，跳過下載。")
+        return
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_csv_file:
+        csv_file_path = temp_csv_file.name
+
+    try:
+        download_csv(url, csv_file_path)
+        convert_csv_to_xlsx(csv_file_path, xlsx_file_path)
+    except Exception as e:
+        logging.error(f"處理過程中出現異常：{e}")
+    finally:
+        if os.path.exists(csv_file_path):
+            os.remove(csv_file_path)
+
+def generate_file_names(start_date, end_date):
+    """生成日期列表，格式為 YYMMDD，適用於 URL 文件名格式。"""
+    return [(start_date + timedelta(days=i)).strftime('%y%m%d') for i in range((end_date - start_date).days + 1)]
+
+def download_and_convert_all(base_urls, save_directories, start_date, end_date):
+    file_names = generate_file_names(start_date, end_date)
+    
+    for base_url, save_directory in zip(base_urls, save_directories):
+        os.makedirs(save_directory, exist_ok=True)
+        for file_name in file_names:
+            url = f"{base_url}{file_name}.csv"
+            xlsx_file_path = os.path.join(save_directory, f"{file_name}.xlsx")
+            download_csv_and_convert_to_xlsx(url, xlsx_file_path)
+
+if __name__ == "__main__":
+    config = configparser.ConfigParser()
+    config.read(r'C:\temp\setting\C_THIS_Process_TMC_ALL.ini')
+    
+    start_date_str = config['Dates']['start_date']
+    end_date_str = config['Dates']['end_date']
+    
+    START_DATE = datetime.strptime(start_date_str, '%y%m%d')
+    END_DATE = datetime.strptime(end_date_str, '%y%m%d')
+
+    BASE_URLS = [
+        #'https://www.hkex.com.hk/chi/stat/dmstat/dayrpt/hhitmcc',
+        'https://www.hkex.com.hk/chi/stat/dmstat/dayrpt/hsiwotmcc',
+        'https://www.hkex.com.hk/chi/stat/dmstat/dayrpt/hsitmcc',
+        'https://www.hkex.com.hk/chi/stat/dmstat/dayrpt/dqetmcc'
+    ]
+    SAVE_DIRECTORIES = [
+        #r"C:\pythonData\result_hs_tmc\china",
+        r"C:\pythonData\result_hs_tmc\hsiweekly",
+        r"C:\pythonData\result_hs_tmc\HSI",
+        r"C:\pythonData\result_hs_tmc\stockopt"
+    ]
+
+    download_and_convert_all(BASE_URLS, SAVE_DIRECTORIES, START_DATE, END_DATE)
